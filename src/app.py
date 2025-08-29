@@ -9,15 +9,19 @@ from PIL import Image
 from pymongo import MongoClient
 from datetime import datetime, timezone
 from tzlocal import get_localzone
+from st_img_pastebutton import paste
 import pytz
 import pandas as pd
 import numpy as np
 import io
+from io import BytesIO
 import base64
 import re
 import random
 import uuid
-
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # =============================================
 # PAGE CONFIGURATION (MUST BE FIRST STREAMLIT COMMAND)
@@ -36,12 +40,11 @@ from streamlit_cookies_manager import EncryptedCookieManager
 # MongoDB Configuration
 MONGO_URI = "mongodb://localhost:27017"  # or replace with your Atlas URI
 DB_NAME = "object_detection"
-COLLECTION_NAME = "detections"
+
 
 # Connect to MongoDB
 client = MongoClient(MONGO_URI)
 db = client[DB_NAME]
-collection = db[COLLECTION_NAME]
 USERS_COLLECTION = "users"
 users_collection = db[USERS_COLLECTION]
 
@@ -59,8 +62,6 @@ if ROOT not in sys.path:
 # Get the relative path of the root directory with respect to the current working directory
 ROOT = ROOT.relative_to(Path.cwd())
 
-# Sources
-IMAGE = 'Image'
 
 # Image Config
 IMAGES_DIR = ROOT / 'images'
@@ -72,6 +73,34 @@ MODEL_DIR = ROOT / 'weights'
 DETECTION_MODEL = MODEL_DIR / 'yolo11n.pt'
 SEGMENTATION_MODEL = MODEL_DIR / 'yolo11n-seg.pt'
 
+# =============================================
+# EMAIL CONFIGURATION
+# =============================================
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+SENDER_EMAIL = "objectdetectionsystem1@gmail.com"
+SENDER_PASSWORD = "tzvgqobgzseiyyng"  #AppPassword
+def send_email(recipient_email, subject, body):
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = SENDER_EMAIL
+        msg["To"] = recipient_email
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body, "plain"))
+
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.send_message(msg)
+
+        return True
+    except Exception as e:
+        error_msg = f"[EMAIL ERROR] {type(e).__name__}: {str(e)}"
+        print(error_msg)   
+        st.error(error_msg)  
+        return False
 
 # =============================================
 # LOGIN/REGISTRATION UI
@@ -134,6 +163,30 @@ def get_username_by_email(email):
         return user["username"]
     return None
 
+def send_username(email):
+    user = users_collection.find_one({"email": email})
+    if not user:
+        return False, "Email not found."
+
+    username = user["username"]
+
+    subject = "Username Recovery - Object Detection System"
+    body = f"""Hello,
+
+    Your registered username is: {username}
+
+    If you didn’t request this, please ignore this email.
+    """
+
+    email_sent = send_email(email, subject, body)
+
+    if email_sent:
+        return True, "Your username has been sent to your email."
+    else:
+        # fallback for dev visibility
+        print(f"[DEBUG] Username for {email}: {username}")
+        return False, "We couldn't send the email. Your username is printed in the server console."
+
 def reset_password(email):
     user = users_collection.find_one({"email": email})
     if not user:
@@ -143,8 +196,23 @@ def reset_password(email):
     hashed = hash_password(new_pass)
     users_collection.update_one({"email": email}, {"$set": {"password": hashed}})
     
-    print(f"[DEBUG] New temporary password for {email}: {new_pass}")
-    return True, f"A new temporary password has been generated and sent to your email."
+    subject = "Password Reset - Object Detection System"
+    body = f"""Hello {user['username']},
+
+    Your temporary password is: {new_pass}
+
+    Log in with this password and change it immediately.
+    """
+
+    email_sent = send_email(email, subject, body)
+
+    if email_sent:
+        return True, "A new temporary password has been sent to your email."
+    else:
+        # Fallback for dev visibility
+        print(f"[DEBUG] Temporary password for {email}: {new_pass}")
+        return False, "We couldn't send the email. Use the temporary password printed in the server console."
+    
 
 def generate_temp_password(length=10):
     return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
@@ -203,9 +271,9 @@ def auth_page():
         if st.button("Register"):
             status, msg = register_user(reg_username, reg_email, reg_password, reg_confirm_password)
             if status:
-                st.success("Register Succsessful" + msg)
+                st.success(f"Register Succsessful")
             else:
-                st.error("Register Failed" + msg)
+                st.error("Register Failed: " + msg)
 
     # --- Forgot Password ---
     with tab3:
@@ -222,30 +290,55 @@ def auth_page():
     # --- Forgot Username ---
     with tab4:
         st.subheader("Forgot Username?")
-        lookup_email = st.text_input("Enter your email", key="lookup_email")
-        if st.button("Find Username"):
-            username = get_username_by_email(lookup_email)
-            if username:
-                st.success(f"Your username is: `{username}`")
+        lookup_email = st.text_input("Enter your registered email", key="lookup_email")
+        if st.button("Send Username"):
+            success, msg = send_username(lookup_email)
+            if success:
+                st.success(msg)
+                st.info("Check your inbox for your username. (Also printed in console for dev/testing.)")
             else:
-                st.error("No user found with this email.")
+                st.error("Error: " + msg)
 
 if not st.session_state.authenticated:
     auth_page()
     st.stop()
 
-# --- Logout ---
 with st.sidebar:
     st.write(f"Logged in as: `{st.session_state.username}`")
-    if st.button("Logout"):
+    account_options = {
+        "Home": "home",
+        "Change Password": "change_password",
+        "Change Email": "change_email",
+        "Logout": "logout"
+    }
+    st.subheader("Manage Account")
+    option_labels = list(account_options.keys())
+
+    # Ensure a default action exists in session_state
+    if "account_action" not in st.session_state:
+        st.session_state.account_action = "Home"
+
+    # Dropdown
+    choice = st.selectbox(
+        "Select Action",
+        option_labels,
+        key="account_action"
+    )
+
+    # Handle choice immediately
+    if account_options[choice] == "logout":
         del cookies["user_id"]
         del cookies["username"]
         st.session_state.authenticated = False
         st.session_state.username = None
         st.session_state.user_id = None
+        st.session_state.page = "home"
+        st.session_state.pop("account_action", None)
         st.rerun()
-
-
+    else:
+        st.session_state.page = account_options[choice]
+            
+    
 # =============================================
 # ------- UI ------
 # =============================================
@@ -324,10 +417,59 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Header with title 
-st.markdown('<p class="header-text">System for Object Recognition</p>', unsafe_allow_html=True)
-st.markdown('<p class="subheader-text">Real-time object detection and segmentation</p>', unsafe_allow_html=True)
+if "page" not in st.session_state:
+    st.session_state.page = "home"
 
+if "account_action" not in st.session_state:
+    st.session_state.account_action = "Home"
+
+# Handle account pages first
+if st.session_state.page == "change_password":
+    st.title("Change Password")
+    current_password = st.text_input("Current Password", type="password")
+    new_password = st.text_input("New Password", type="password")
+    confirm_new_password = st.text_input("Confirm New Password", type="password")
+
+    if st.button("Change Password"):
+        user = users_collection.find_one({"user_id": st.session_state.user_id})
+        if user and check_password(current_password, user['password']):
+            if new_password == confirm_new_password and is_strong_password(new_password):
+                hashed = hash_password(new_password)
+                users_collection.update_one(
+                    {"user_id": user["user_id"]},
+                    {"$set": {"password": hashed}}
+                )
+                st.success("Password updated successfully.")
+            else:
+                st.error("New passwords do not match or are not strong enough.")
+        else:
+            st.error("Current password is incorrect.")
+
+    
+
+    st.stop()   # prevent main page from rendering
+
+elif st.session_state.page == "change_email":
+    st.title("Change Email")
+    password_for_email = st.text_input("Password", type="password")
+    new_email = st.text_input("New Email")
+
+    if st.button("Change Email"):
+        user = users_collection.find_one({"user_id": st.session_state.user_id})
+        if user and check_password(password_for_email, user['password']):
+            if is_valid_email(new_email) and not users_collection.find_one({"email": new_email}):
+                users_collection.update_one(
+                    {"user_id": user["user_id"]},
+                    {"$set": {"email": new_email}}
+                )
+                st.success("Email updated successfully.")
+            else:
+                st.error("Invalid or already registered email.")
+        else:
+            st.error("Password is incorrect.")
+
+
+    st.stop()   # prevent main page from rendering
 # SideBar
 with st.sidebar:
     st.markdown("""
@@ -399,7 +541,7 @@ with st.sidebar:
     st.subheader("Image Source")
     image_source = st.radio(
         "Select image source:",
-        ["Upload an image", "Paste from clipboard"],
+        ["Upload an image", "Paste from clipboard (text input)", "Paste from clipboard (button)"],
         index=0,
         help="Choose how to provide the image for detection"
     )
@@ -407,7 +549,7 @@ with st.sidebar:
     # Image Upload/Paste Section
     st.subheader("Image Configuration")
     source_image = None
-    
+
     if image_source == "Upload an image":
         source_image = st.file_uploader(
             "Upload an image",
@@ -415,9 +557,9 @@ with st.sidebar:
             help="Upload an image for object detection",
             key="file_uploader"
         )
-    else:
+
+    elif image_source == "Paste from clipboard (text input)":
         paste_data = st.text_area("Paste image here (as base64 or URL)", "", height=100, key="paste_area")
-        
         if paste_data:
             try:
                 if paste_data.startswith("data:image"):
@@ -434,6 +576,17 @@ with st.sidebar:
                     source_image = io.BytesIO(image_data)
             except:
                 st.error("Could not process the pasted image. Please try another method.")
+
+    elif image_source == "Paste from clipboard (button)":
+        image_data = paste(label="Paste from Clipboard", key="image_clipboard")
+        if image_data is not None:
+            try:
+                header, encoded = image_data.split(",", 1)
+                binary_data = base64.b64decode(encoded)
+                source_image = io.BytesIO(binary_data)
+                st.image(source_image, caption="Pasted from Clipboard", use_container_width=True)
+            except Exception as e:
+                st.error(f"Failed to process clipboard image: {e}")
 
 
 
@@ -453,6 +606,8 @@ except Exception as e:
 # =============================================
 # Main PAGE (FRONT PAGE)
 # =============================================
+
+
 
 tab1, tab2, tab3 = st.tabs(["Image Detection", "Statistics", "Detection History"])
 
@@ -493,6 +648,135 @@ with tab1:
             st.error("Error Occurred While Processing the Image")
             st.error(e)
     st.markdown("---")
+
+# =============================================
+# ---- IMAGE RESIZE CONFIGURATION TOGGLE ----
+# =============================================
+
+def update_width_from_slider():
+    st.session_state.resize_width = st.session_state.width_slider
+    st.session_state.width_input = st.session_state.width_slider
+
+def update_width_from_input():
+    st.session_state.resize_width = st.session_state.width_input
+    st.session_state.width_slider = st.session_state.width_input
+
+def update_height_from_slider():
+    st.session_state.resize_height = st.session_state.height_slider
+    st.session_state.height_input = st.session_state.height_slider
+
+def update_height_from_input():
+    st.session_state.resize_height = st.session_state.height_input
+    st.session_state.height_slider = st.session_state.height_input
+
+
+# Sidebar toggle
+resize_mode = st.sidebar.radio(
+    "Image Resize Mode",
+    ("Disabled", "Enabled"),
+    index=0
+)
+
+if source_image is not None and resize_mode == "Enabled":
+    st.subheader("Image Resize")
+
+    # Get original image size for display and default
+    try:
+        if isinstance(source_image, io.BytesIO):
+            source_image.seek(0)
+        temp_img = Image.open(source_image)
+        orig_width, orig_height = temp_img.size
+    except Exception:
+        orig_width, orig_height = 640, 480  # fallback
+
+    st.info(f"Original Size: {orig_width} x {orig_height} px")
+
+    # Initialize session state
+    if "resize_width" not in st.session_state:
+        st.session_state.resize_width = orig_width
+    if "resize_height" not in st.session_state:
+        st.session_state.resize_height = orig_height
+
+    # --- Width controls ---
+    col_w1, col_w2 = st.columns([3, 1])
+    with col_w1:
+        st.slider(
+            "Width (px)",
+            min_value=50,
+            max_value=2000,
+            value=st.session_state.resize_width,
+            step=1,
+            key="width_slider",
+            on_change=update_width_from_slider
+    )
+    with col_w2:
+        st.number_input(
+            "Width",
+            min_value=50,
+            max_value=2000,
+            value=st.session_state.resize_width,
+            step=1,
+            key="width_input",
+            on_change=update_width_from_input
+    )
+
+    # Keep both in sync
+    if st.session_state.width_slider != st.session_state.width_input:
+        st.session_state.resize_width = st.session_state.width_input
+
+    # --- Height controls ---
+    col_h1, col_h2 = st.columns([3, 1])
+    with col_h1:
+        st.slider(
+            "Height (px)",
+            min_value=50,
+            max_value=2000,
+            value=st.session_state.resize_height,
+            step=1,
+            key="height_slider",
+            on_change=update_height_from_slider
+        )
+    with col_h2:
+        st.number_input(
+            "Height",
+            min_value=50,
+            max_value=2000,
+            value=st.session_state.resize_height,
+            step=1,
+            key="height_input",
+            on_change=update_height_from_input
+        )
+
+    # Keep both in sync
+    if st.session_state.height_slider != st.session_state.height_input:
+        st.session_state.resize_height = st.session_state.height_input
+
+    # --- Apply resize immediately ---
+    try:
+        if isinstance(source_image, io.BytesIO):
+            source_image.seek(0)
+        img_pil = Image.open(source_image)
+        img_np = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+
+        resized_img = cv2.resize(
+            img_np,
+            (st.session_state.resize_width, st.session_state.resize_height),
+            interpolation=cv2.INTER_AREA
+        )
+
+        resized_pil = Image.fromarray(cv2.cvtColor(resized_img, cv2.COLOR_BGR2RGB))
+        buf = io.BytesIO()
+        resized_pil.save(buf, format="JPEG")
+        buf.seek(0)
+        source_image = buf  # update source image
+
+        st.image(resized_pil,
+                 caption=f"Resized Image ({st.session_state.resize_width}x{st.session_state.resize_height})",
+                 use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Error resizing image: {e}")
+
 
 # =============================================
 # ---- DETECTION BUTTON -----
@@ -571,7 +855,9 @@ if source_image is not None:
                 unique_classes = list(class_counts.keys())
 
                 # Choose target collection based on classes
-                if len(unique_classes) == 1:
+                if len(unique_classes) == 0:
+                    target_collection_name = "no_detections"
+                elif len(unique_classes) == 1:
                     target_collection_name = unique_classes[0].replace(" ", "_")  # e.g., "traffic light" → "traffic_light"
                 else:
                     target_collection_name = "Multiclass_objects"
@@ -648,7 +934,15 @@ with tab3:
 
     user_id = st.session_state.user_id
     class_filter = st.text_input("Filter by class name (optional)")
-    source_filter = st.selectbox("Filter by source (optional)", ["", "Upload an image", "Paste from clipboard"])
+    source_filter = st.selectbox(
+        "Filter by source (optional)",
+        [
+            "",
+            "Upload an image",
+            "Paste from clipboard (text input)",
+            "Paste from clipboard (button)"
+        ]
+    )
     
     history_docs = history.get_detection_history(
         user_id=user_id,
@@ -671,7 +965,6 @@ with tab3:
 
             with col1:
                 st.markdown(f"**{i+1}. {doc.get('image_name', 'Unnamed Image')}**")
-                image_data = doc.get("image_bytes")
                 image_data = doc.get("image_bytes")
                 if image_data:
                     try:
@@ -700,4 +993,44 @@ with tab3:
 
             st.markdown("---")
 
+
+def get_all_collections():
+    return db.list_collection_names()
+
+def get_detection_history(user_id, class_filter=None, source_filter=None, limit=100):
+    results = []
+    for col_name in get_all_collections():
+        if col_name == "users":
+            continue
+        query = {"user_id": user_id}
+        if class_filter:
+            query["object_counts." + class_filter] = {"$exists": True}
+        if source_filter:
+            query["source"] = source_filter
+        collection = db[col_name]
+        docs = collection.find(query).sort("timestamp", -1).limit(limit)
+        for doc in docs:
+            doc["collection"] = col_name
+            results.append(doc)
+    return results
+
+def history_to_dataframe(docs):
+    rows = []
+    for doc in docs:
+        timestamp = doc.get("timestamp")
+        model_type = doc.get("model_type")
+        source = doc.get("source")
+        image_name = doc.get("image_name")
+        collection = doc.get("collection", "")
+        for cls, count in doc.get("object_counts", {}).items():
+            rows.append({
+                "Date": timestamp,
+                "Class": cls,
+                "Count": count,
+                "Model": model_type,
+                "Source": source,
+                "Image": image_name,
+                "Collection": collection
+            })
+    return pd.DataFrame(rows)
 
