@@ -1,0 +1,26 @@
+<annotation>
+	<folder>watergun</folder>
+	<filename>64.jpg</filename>
+	<path>E:\obj_detect_file\simple_obj_detect\datasets\watergun\64.jpg</path>
+	<source>
+		<database>Unknown</database>
+	</source>
+	<size>
+		<width>1800</width>
+		<height>4000</height>
+		<depth>3</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>Water Gun</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<bndbox>
+			<xmin>463</xmin>
+			<ymin>1298</ymin>
+			<xmax>1326</xmax>
+			<ymax>2574</ymax>
+		</bndbox>
+	</object>
+</annotation>
