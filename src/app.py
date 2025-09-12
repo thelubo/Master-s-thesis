@@ -14,6 +14,7 @@ import pytz
 import pandas as pd
 import numpy as np
 import io
+import tensorflow as tf
 from io import BytesIO
 import base64
 import re
@@ -72,6 +73,11 @@ DEFAULT_DETECT_IMAGE = IMAGES_DIR / 'detectedimage2.jpg'
 MODEL_DIR = ROOT / 'weights'
 DETECTION_MODEL = MODEL_DIR / 'yolo11n.pt'
 SEGMENTATION_MODEL = MODEL_DIR / 'yolo11n-seg.pt'
+
+CUSTOM_YOLO_MODEL = MODEL_DIR / 'my_model.pt'
+
+CUSTOM_MODEL_PATH = MODEL_DIR / 'simple_object_detection.h5'
+
 
 # =============================================
 # EMAIL CONFIGURATION
@@ -238,14 +244,76 @@ if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
         st.session_state.username = None
 
+def centered_input(label, **kwargs):
+    col1, col2, col3 = st.columns([1,2,1])  # центриране
+    with col2:
+        return st.text_input(label, **kwargs)
+
 def auth_page():
-    st.title("User Authentication")
+    # CSS за центриране и стил
+    st.markdown("""
+        <style>
+        /* Background */
+        body {
+            background: linear-gradient(135deg, #1e3c72, #2a5298);
+            background-attachment: fixed;
+        }
+        .centered-title {
+            text-align: center;
+            font-family: 'Segoe UI', sans-serif;
+            color: #222;
+        }
+        div[data-baseweb="tab-list"] {
+            display: flex;
+            justify-content: center;
+        }
+        div[data-testid="stTextInput"] {
+            margin: 0 auto;
+            width: 50% !important;
+        }
+        div[data-testid="stTextInput"] > div > div > input {
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            padding: 0.6rem;
+            font-size: 1rem;
+        }
+        div[data-testid="stTextInput"] > div > div > input:focus {
+            border: 1px solid #007bff;
+            box-shadow: 0 0 5px rgba(0,123,255,0.5);
+            outline: none;
+        }
+        div.stButton > button {
+            display: block;
+            margin: 1rem auto;
+            width: 50% !important;
+            border-radius: 25px;
+            background: linear-gradient(135deg, #007bff, #00d4ff);
+            color: white;
+            font-weight: 600;
+            padding: 0.6rem;
+            border: none;
+            transition: 0.3s ease;
+        }
+        div.stButton > button:hover {
+            background: linear-gradient(135deg, #0056b3, #0099cc);
+            transform: scale(1.02);
+        }
+        label {
+            display: block;
+            text-align: center;
+            font-weight: 600;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # Главно заглавие
+    st.markdown("<h1 class='centered-title'>User Authentication</h1>", unsafe_allow_html=True)
 
     tab1, tab2, tab3, tab4 = st.tabs(["Login", "Register", "Forgot Password", "Forgot Username"])
 
     # --- Login ---
     with tab1:
-        st.subheader("Login")
+        st.markdown("<h3 class='centered-title'>Login</h3>", unsafe_allow_html=True)
         login_username = st.text_input("Username", key="login_user")
         login_password = st.text_input("Password", type="password", key="login_pass")
         if st.button("Login"):
@@ -263,7 +331,7 @@ def auth_page():
 
     # --- Register ---
     with tab2:
-        st.subheader("Register")
+        st.markdown("<h3 class='centered-title'>Register</h3>", unsafe_allow_html=True)
         reg_username = st.text_input("Username", key="reg_user")
         reg_email = st.text_input("Email", key="reg_email")
         reg_password = st.text_input("Password", type="password", key="reg_pass")
@@ -271,25 +339,25 @@ def auth_page():
         if st.button("Register"):
             status, msg = register_user(reg_username, reg_email, reg_password, reg_confirm_password)
             if status:
-                st.success(f"Register Succsessful")
+                st.success("Register Successful")
             else:
                 st.error("Register Failed: " + msg)
 
     # --- Forgot Password ---
     with tab3:
-        st.subheader("Forgot Password?")
+        st.markdown("<h3 class='centered-title'>Forgot Password?</h3>", unsafe_allow_html=True)
         reset_email = st.text_input("Enter your registered email", key="reset_email")
         if st.button("Reset Password"):
             success, msg = reset_password(reset_email)
             if success:
-                st.success("Password has been sent" + msg)
+                st.success("Password has been sent " + msg)
                 st.info("Temporary password printed in console for dev/testing.")
             else:
-                st.error("Error" + msg)
+                st.error("Error " + msg)
 
     # --- Forgot Username ---
     with tab4:
-        st.subheader("Forgot Username?")
+        st.markdown("<h3 class='centered-title'>Forgot Username?</h3>", unsafe_allow_html=True)
         lookup_email = st.text_input("Enter your registered email", key="lookup_email")
         if st.button("Send Username"):
             success, msg = send_username(lookup_email)
@@ -298,6 +366,7 @@ def auth_page():
                 st.info("Check your inbox for your username. (Also printed in console for dev/testing.)")
             else:
                 st.error("Error: " + msg)
+
 
 if not st.session_state.authenticated:
     auth_page()
@@ -498,7 +567,7 @@ with st.sidebar:
     # Choose Model: Detection or Segmentation 
     model_type = st.radio(
         "Select Task Type:",
-        ["Detection", "Segmentation",],
+        ["YOLO General Detection", "YOLO General Segmentation","YOLO Model (Specific)", "TensorFlow Model (Specific)"],
         index=0,
         help="Choose between object detection and instance segmentation"
     )
@@ -515,13 +584,6 @@ with st.sidebar:
     )
     confidence_value = float(confidence_value) / 100
     
-    # Visual indicator for confidence level
-    st.markdown(f"""
-        <div style="background: linear-gradient(90deg, #e74c3c {confidence_value*100}%, #ecf0f1 {confidence_value*100}%);
-                    height: 8px; 
-                    border-radius: 4px;
-                    margin-bottom: 20px;"></div>
-    """, unsafe_allow_html=True)
     
     # Class Selection
     CLASSES = [
@@ -591,17 +653,29 @@ with st.sidebar:
 
 
 # Selecting Detection or Segmentation Model
-if model_type == 'Detection':
-    model_path = Path(DETECTION_MODEL)
-elif model_type == 'Segmentation':
-    model_path = Path(SEGMENTATION_MODEL)
-
-# Load the YOLO Model
 try:
-    model = YOLO(model_path)
+    custom_model = tf.keras.models.load_model(CUSTOM_MODEL_PATH, compile=False)
 except Exception as e:
-    st.error(f"Unable to load model. Check the specified path: {model_path}")
+    st.error(f"Unable to load custom model at {CUSTOM_MODEL_PATH}")
     st.error(e)
+    custom_model = None
+if model_type == 'YOLO General Detection':
+    model_path = Path(DETECTION_MODEL)
+    model = YOLO(model_path)
+    class_map = model.names
+elif model_type == 'YOLO General Segmentation':
+    model_path = Path(SEGMENTATION_MODEL)
+    model = YOLO(model_path)
+    class_map = model.names
+elif model_type == 'YOLO Model (Specific)':
+    model_path = Path(CUSTOM_YOLO_MODEL)
+    model = YOLO(model_path)
+    class_map = model.names
+elif model_type == 'TensorFlow Model (Specific)':
+    model = custom_model  
+    class_map = None
+
+
 
 # =============================================
 # Main PAGE (FRONT PAGE)
@@ -609,7 +683,8 @@ except Exception as e:
 
 
 
-tab1, tab2, tab3 = st.tabs(["Image Detection", "Statistics", "Detection History"])
+tab1, tab2, tab3, tab4 = st.tabs(["Image Detection", "Statistics", "Detection History", "Overall Statistics"])
+
 
 with tab1:
     col1, col2 = st.columns(2)
@@ -703,7 +778,7 @@ if source_image is not None and resize_mode == "Enabled":
         st.slider(
             "Width (px)",
             min_value=50,
-            max_value=2000,
+            max_value=5000,
             value=st.session_state.resize_width,
             step=1,
             key="width_slider",
@@ -713,7 +788,7 @@ if source_image is not None and resize_mode == "Enabled":
         st.number_input(
             "Width",
             min_value=50,
-            max_value=2000,
+            max_value=5000,
             value=st.session_state.resize_width,
             step=1,
             key="width_input",
@@ -730,7 +805,7 @@ if source_image is not None and resize_mode == "Enabled":
         st.slider(
             "Height (px)",
             min_value=50,
-            max_value=2000,
+            max_value=5000,
             value=st.session_state.resize_height,
             step=1,
             key="height_slider",
@@ -740,7 +815,7 @@ if source_image is not None and resize_mode == "Enabled":
         st.number_input(
             "Height",
             min_value=50,
-            max_value=2000,
+            max_value=5000,
             value=st.session_state.resize_height,
             step=1,
             key="height_input",
@@ -787,101 +862,154 @@ if source_image is not None:
     if st.button(f"Detect Objects ({model_type})", key="detect_button"):
         with st.spinner(f"Processing {model_type}..."):
             try:
-                if isinstance(source_image, io.BytesIO):
-                    source_image.seek(0)
                 uploaded_image = Image.open(source_image)
-                
-                # Run detection
-                result = model.predict(uploaded_image, conf=confidence_value)
-                boxes = result[0].boxes
-                result_plotted = result[0].plot()[:, :, ::-1]
-                
-                # Display results in the right column
-                with tab1:
-                    with col2:
-                        st.image(result_plotted, 
-                                 caption=f"{model_type} Results (Confidence: {confidence_value*100}%)", 
-                                 use_container_width=True)
-                
-                # Object Counting
-                class_counts = {}
-                for box in boxes:
-                    class_id = int(box.cls)
-                    class_name = CLASSES[class_id]
-                    if class_name in class_counts:
-                        class_counts[class_name] += 1
+
+                # ---------------- YOLO (Detection / Segmentation / Custom YOLO) ----------------
+                if model_type in ["YOLO General Detection", "YOLO General Segmentation", "YOLO Model (Specific)"]:
+                    result = model.predict(uploaded_image, conf=confidence_value)
+                    boxes = result[0].boxes
+                    result_plotted = result[0].plot()[:, :, ::-1]
+
+                    with tab1:
+                        with col2:
+                            st.image(result_plotted,
+                                     caption=f"{model_type} Results (Confidence: {confidence_value*100:.1f}%)",
+                                     use_container_width=True)
+
+                    # броене на обекти
+                    class_counts = {}
+                    for box in boxes:
+                        class_id = int(box.cls)
+                        class_name = class_map[class_id]
+                        class_counts[class_name] = class_counts.get(class_name, 0) + 1
+
+                    # размери на изображението
+                    image_width, image_height = uploaded_image.size
+
+                    # подготовка на данни за MongoDB
+                    detection_data = {
+                        "timestamp": datetime.now(timezone.utc),
+                        "model_type": model_type,
+                        "confidence_threshold": confidence_value,
+                        "source": image_source,
+                        "image_name": source_image.name if image_source == "Upload an image" and hasattr(source_image, 'name') else "pasted_image",
+                        "image_resolution": {"width": image_width, "height": image_height},
+                        "object_counts": class_counts,
+                        "objects": [],
+                        "user_id": st.session_state.user_id
+                    }
+
+                    # добавяне на всеки обект
+                    for i, box in enumerate(boxes):
+                        detection_data["objects"].append({
+                            "object_id": i,
+                            "class": CLASSES[int(box.cls)],
+                            "confidence": float(box.conf),
+                            "box_xywh": box.xywh.tolist()[0]
+                        })
+
+                    # записване изображение като base64
+                    image_pil = Image.fromarray(result_plotted)
+                    buffered = io.BytesIO()
+                    image_pil.save(buffered, format="JPEG")
+                    detection_data["image_bytes"] = base64.b64encode(buffered.getvalue()).decode("utf-8")
+
+                    # избор на колекция
+                    unique_classes = list(class_counts.keys())
+                    if len(unique_classes) == 0:
+                        target_collection_name = "no_detections"
+                    elif len(unique_classes) == 1:
+                        target_collection_name = unique_classes[0].replace(" ", "_")
                     else:
-                        class_counts[class_name] = 1
-                
+                        target_collection_name = "Multiclass_objects"
 
-                # Get image size (width, height)
-                image_width, image_height = uploaded_image.size
+                    try:
+                        db[target_collection_name].insert_one(detection_data)
+                        st.success(f"Detection saved to database collection")
+                    except Exception as e:
+                        st.error("Failed to store detection in MongoDB:")
+                        st.error(e)
 
-                # Extract YOLO model version or filename
-                model_name = getattr(model, 'model', None)
-                model_version = str(model_name) if model_name else str(model_path.name)
+                    # запазване в session_state
+                    st.session_state.detection_results = {
+                        "image": result_plotted,
+                        "counts": class_counts,
+                        "boxes": boxes,
+                        "model_type": model_type
+                    }
 
-                # Preparing detection data
-                detection_data = {
-                    "timestamp": datetime.now(timezone.utc),
-                    "model_type": model_type,
-                    "confidence_threshold": confidence_value,
-                    "source": image_source,
-                    "image_name": source_image.name if image_source == "Upload an image" and hasattr(source_image, 'name') else "pasted_image",
-                    "image_resolution": {
-                        "width": image_width,
-                        "height": image_height
-                    },
-                    "object_counts": class_counts,
-                    "objects": [],
-                    "user_id": st.session_state.user_id
-                }
+                # ---------------- Custom TensorFlow Model ----------------
+                elif model_type == "TensorFlow Model (Specific)":
+                    if model is None:
+                        st.error("Custom model not loaded.")
+                    else:
+                        # Преобработка
+                        img = uploaded_image.convert("L")
+                        img = img.resize((340, 340))
+                        img_arr = np.array(img) / 255.0
+                        img_arr = np.expand_dims(img_arr, axis=(0, -1))
 
-                # Add each detected object
-                for i, box in enumerate(boxes):
-                    detection_data["objects"].append({
-                        "object_id": i,
-                        "class": CLASSES[int(box.cls)],
-                        "confidence": float(box.conf),
-                        "box_xywh": box.xywh.tolist()[0]
-                    })
+                        # Предсказване
+                        pred_bbox, pred_class_logits = model.predict(img_arr)
+                        pred_bbox = np.squeeze(pred_bbox)
+                        pred_class = np.argmax(pred_class_logits, axis=-1)[0]
 
-                image_pil = Image.fromarray(result_plotted)
-                buffered = io.BytesIO()
-                image_pil.save(buffered, format="JPEG")
-                detection_data["image_bytes"] = base64.b64encode(buffered.getvalue()).decode("utf-8")
+                        # Преоразмеряване обратно към оригинала
+                        w, h = uploaded_image.size
+                        xmin, ymin, xmax, ymax = (
+                            int(pred_bbox[0] * w),
+                            int(pred_bbox[1] * h),
+                            int(pred_bbox[2] * w),
+                            int(pred_bbox[3] * h),
+                        )
 
-                # Determine unique classes detected
-                unique_classes = list(class_counts.keys())
+                        # Рисуване
+                        img_np = np.array(uploaded_image)
+                        import cv2
+                        cv2.rectangle(img_np, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
+                        label = "Water Gun"
+                        cv2.putText(img_np, label, (xmin, max(ymin - 10, 0)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
 
-                # Choose target collection based on classes
-                if len(unique_classes) == 0:
-                    target_collection_name = "no_detections"
-                elif len(unique_classes) == 1:
-                    target_collection_name = unique_classes[0].replace(" ", "_")  # e.g., "traffic light" → "traffic_light"
-                else:
-                    target_collection_name = "Multiclass_objects"
+                        with tab1:
+                            with col2:
+                                st.image(img_np, caption="Custom Model Detection", use_container_width=True)
 
-                # Insert into appropriate collection
-                try:
-                    target_collection = db[target_collection_name]
-                    target_collection.insert_one(detection_data)
-                    st.success(f"Detection saved to MongoDB collection: '{target_collection_name}'")
-                except Exception as e:
-                    st.error("Failed to store detection in MongoDB:")
-                    st.error(e)
+                        # Подготовка на данни за MongoDB
+                        detection_data = {
+                            "timestamp": datetime.now(timezone.utc),
+                            "model_type": model_type,
+                            "confidence_threshold": confidence_value,
+                            "source": image_source,
+                            "image_name": source_image.name if hasattr(source_image, 'name') else "pasted_image",
+                            "image_resolution": {"width": w, "height": h},
+                            "object_counts": {"Water Gun": 1},
+                            "objects": [{
+                                "object_id": 0,
+                                "class": "Water Gun",
+                                "confidence": float(np.max(pred_class_logits)),
+                                "box_xyxy": [xmin, ymin, xmax, ymax]
+                            }],
+                            "user_id": st.session_state.user_id
+                        }
 
-                # Store results in session state for the statistics tab
-                st.session_state.detection_results = {
-                    "image": result_plotted,
-                    "counts": class_counts,
-                    "boxes": boxes,
-                    "model_type": model_type
-                }
+                        buffered = io.BytesIO()
+                        Image.fromarray(img_np).save(buffered, format="JPEG")
+                        detection_data["image_bytes"] = base64.b64encode(buffered.getvalue()).decode("utf-8")
+
+                        try:
+                            db["Water_Gun"].insert_one(detection_data)
+                            st.success("Detection saved to MongoDB collection: 'Water_Gun'")
+                        except Exception as e:
+                            st.error("Failed to store detection in MongoDB:")
+                            st.error(e)
+
             except Exception as e:
                 st.error("Error during detection:")
                 st.error(e)
     st.markdown('</div>', unsafe_allow_html=True)
+
+
 
 
 with tab2:
@@ -895,12 +1023,12 @@ with tab2:
         
         with col1:
             st.markdown('<div class="metric-card"><div class="metric-title">Total Objects Detected</div>'
-                        f'<div class="metric-value">{sum(results["counts"].values())}</div></div>', 
+                        f'<div class="metric-value">{sum(results.get("counts", {}).values())}</div></div>', 
                         unsafe_allow_html=True)
         
         with col2:
             st.markdown('<div class="metric-card"><div class="metric-title">Unique Classes</div>'
-                        f'<div class="metric-value">{len(results["counts"])}</div></div>', 
+                        f'<div class="metric-value">{len(results.get("counts", {}))}</div></div>', 
                         unsafe_allow_html=True)
         
         with col3:
@@ -910,22 +1038,56 @@ with tab2:
         
         # ---- Statistics display Object Counts in a Table with sorting ----
         st.subheader("Object Counts")
-        count_df = pd.DataFrame(list(results["counts"].items()), columns=["Class", "Count"])
-        st.dataframe(
-            count_df.sort_values("Count", ascending=False),
-            use_container_width=True,
-            height=min(400, 50 + 35 * len(count_df))
-        )
-        # Show detection details in an expander
+
+        # Collect confidences per class (works even if boxes empty)
+        confidences_by_class = {}
+        for box in results.get("boxes", []):
+            cls_name = CLASSES[int(box.cls)]
+            # box.conf е тензор → изваждаме стойността правилно
+            conf = float(box.conf.item() if hasattr(box.conf, "item") else box.conf)
+            confidences_by_class.setdefault(cls_name, []).append(conf)
+
+        # Build dataframe
+        data_rows = []
+        for cls_name, count in results.get("counts", {}).items():
+            if isinstance(cls_name, int):
+                cls_name = CLASSES[cls_name]
+            avg_conf = np.mean(confidences_by_class.get(cls_name, [])) if cls_name in confidences_by_class else 0
+            data_rows.append({
+                "Class": cls_name,
+                "Count": count,
+                "Avg Confidence": f"{avg_conf:.2f}"
+            })
+
+        count_df = pd.DataFrame(data_rows)
+
+        # <-- FIX: only sort/show if 'Count' exists and df not empty -->
+        if not count_df.empty and "Count" in count_df.columns:
+            st.dataframe(
+                count_df.sort_values("Count", ascending=False),
+                use_container_width=True,
+                height=min(400, 50 + 35 * len(count_df))
+            )
+        else:
+            st.info("No objects detected in this image.")
+            # optional: show an empty table with the expected columns
+            st.dataframe(pd.DataFrame(columns=["Class", "Count", "Avg Confidence"]),
+                         use_container_width=True,
+                         height=100)
+
+        # Show detection details in an expander (only if there are boxes)
         with st.expander("Detailed Detection Data"):
-            st.write("Raw detection data from the model:")
-            for i, box in enumerate(results["boxes"]):
-                st.json({
-                    "object_id": i,
-                    "class": CLASSES[int(box.cls)],
-                    "confidence": float(box.conf),
-                    "coordinates": box.xywh.tolist()
-                })
+            if not results.get("boxes"):
+                st.write("No detection boxes available.")
+            else:
+                st.write("Raw detection data from the model:")
+                for i, box in enumerate(results["boxes"]):
+                    st.json({
+                        "object_id": i,
+                        "class": CLASSES[int(box.cls)],
+                        "confidence": float(box.conf),
+                        "coordinates": box.xywh.tolist()
+                    })
 
 with tab3:
     st.subheader("Detection History")
@@ -1034,3 +1196,65 @@ def history_to_dataframe(docs):
             })
     return pd.DataFrame(rows)
 
+with tab4:
+    st.subheader("Overall Statistics (All Detections)")
+
+
+    user_id = st.session_state.user_id
+    all_docs = get_detection_history(user_id=user_id, limit=500)  
+
+    if not all_docs:
+        st.warning("No detection history found for this user.")
+    else:
+        
+        total_objects = 0
+        class_counts = {}
+        confidences_by_class = {}
+
+        for doc in all_docs:
+            counts = doc.get("object_counts", {})
+            for cls, cnt in counts.items():
+                total_objects += cnt
+                class_counts[cls] = class_counts.get(cls, 0) + cnt
+
+            for obj in doc.get("objects", []):
+                cls = obj["class"]
+                conf = obj["confidence"]
+                if cls not in confidences_by_class:
+                    confidences_by_class[cls] = []
+                confidences_by_class[cls].append(conf)
+
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown('<div class="metric-card"><div class="metric-title">Total Objects Detected</div>'
+                        f'<div class="metric-value">{total_objects}</div></div>', unsafe_allow_html=True)
+        with col2:
+            st.markdown('<div class="metric-card"><div class="metric-title">Unique Classes</div>'
+                        f'<div class="metric-value">{len(class_counts)}</div></div>', unsafe_allow_html=True)
+        with col3:
+            avg_conf = np.mean([c for lst in confidences_by_class.values() for c in lst]) if confidences_by_class else 0
+            st.markdown('<div class="metric-card"><div class="metric-title">Average Confidence</div>'
+                        f'<div class="metric-value">{avg_conf*100:.1f}%</div></div>', unsafe_allow_html=True)
+
+        
+        rows = []
+        for cls, count in class_counts.items():
+            avg_conf = np.mean(confidences_by_class.get(cls, [])) if cls in confidences_by_class else 0
+            rows.append({
+                "Class": cls,
+                "Count": count,
+                "Avg Confidence": f"{avg_conf:.2f}"
+            })
+
+        df_overall = pd.DataFrame(rows)
+        st.subheader("Object Counts Across All Detections")
+        st.dataframe(
+            df_overall.sort_values("Count", ascending=False),
+            use_container_width=True,
+            height=min(500, 50 + 35 * len(df_overall))
+        )
+
+        
+        st.subheader("Class Distribution")
+        st.bar_chart(df_overall.set_index("Class")["Count"])
