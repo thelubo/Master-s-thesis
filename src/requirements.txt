@@ -18,3 +18,7 @@ streamlit-paste-button==0.1.2
 keras==3.9.0
 ml-dtypes==0.4.1
 tensorboard==2.18.0
+st-img-pastebutton==0.0.6
+tensorflow==2.18.0
+tensorflow-io-gcs-filesystem==0.31.0
+tensorflow_intel==2.18.0
